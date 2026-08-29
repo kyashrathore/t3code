@@ -1197,6 +1197,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
     return (
       <li
         data-thread-item
+        data-thread-id={thread.id}
         className="list-none [content-visibility:auto] [contain-intrinsic-size:auto_34px]"
       >
         <Tooltip>
@@ -1205,7 +1206,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
               <div
                 role="button"
                 tabIndex={0}
-                data-testid="sidebar-row-slim"
+                data-testid={`thread-row-${thread.id}`}
                 aria-busy={isRegeneratingTitle || undefined}
                 className={cn(rowSurfaceClassName, "flex h-9 items-center gap-2.5 px-2.5")}
                 onClick={handleClick}
@@ -1344,6 +1345,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   return (
     <li
       data-thread-item
+      data-thread-id={thread.id}
       ref={sortable?.setNodeRef}
       style={
         sortable
@@ -1365,7 +1367,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
             <div
               role="button"
               tabIndex={0}
-              data-testid="sidebar-row-card"
+              data-testid={`thread-row-${thread.id}`}
               aria-busy={isRegeneratingTitle || undefined}
               className={rowSurfaceClassName}
               onClick={handleClick}

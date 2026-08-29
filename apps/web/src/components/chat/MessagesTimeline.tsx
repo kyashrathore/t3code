@@ -581,7 +581,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   return (
     <TimelineRowCtx value={sharedState}>
       <TimelineRowActivityCtx value={activityState}>
-        <div ref={setTimelineViewportElement} className="relative h-full min-h-0">
+        <div
+          ref={setTimelineViewportElement}
+          className="relative h-full min-h-0"
+          data-timeline-scroll-root="true"
+        >
           <LegendList<MessagesTimelineRow>
             ref={listRef}
             data={rows}

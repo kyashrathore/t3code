@@ -83,6 +83,19 @@ const unitTestProject = {
   },
 } satisfies TestProjectInlineConfiguration;
 
+const perfTestProject = {
+  extends: true,
+  test: {
+    name: "perf",
+    include: ["test/perf/**/*.perf.test.ts"],
+    environment: "node",
+    fileParallelism: false,
+    maxConcurrency: 1,
+    hookTimeout: 180_000,
+    testTimeout: 180_000,
+  },
+} satisfies TestProjectInlineConfiguration;
+
 function resolveDevProxyTarget(
   backendPort: string | undefined,
   wsUrl: string | undefined,
@@ -263,7 +276,7 @@ export default defineConfig(() => {
       sourcemap: buildSourcemap,
     },
     test: {
-      projects: [defineProject(unitTestProject)],
+      projects: [defineProject(unitTestProject), defineProject(perfTestProject)],
     },
   };
 });

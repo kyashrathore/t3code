@@ -6498,7 +6498,10 @@ function ChatViewContent(props: ChatViewProps) {
               />
             </div>
             {/* Messages Wrapper */}
-            <div className="relative flex min-h-0 flex-1 flex-col">
+            <div
+              className="relative flex min-h-0 flex-1 flex-col"
+              data-testid={`chat-thread-${activeThread.id}`}
+            >
               {/* Messages — LegendList handles virtualization and scrolling internally */}
               <MessagesTimeline
                 agentPanelModel={agentPanelModel}
