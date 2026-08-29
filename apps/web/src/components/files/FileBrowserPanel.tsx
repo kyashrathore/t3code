@@ -6,7 +6,7 @@ import type { EnvironmentId, ProjectEntry } from "@t3tools/contracts";
 import { FileTree, useFileTree, useFileTreeSearch, useFileTreeSelector } from "@pierre/trees/react";
 import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
 import { ChevronsDownUpIcon, ChevronsUpDownIcon, RotateCw } from "lucide-react";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "~/components/ui/button";
 import { InputGroup, InputGroupInput } from "~/components/ui/input-group";
@@ -23,7 +23,13 @@ import { T3_PIERRE_ICONS } from "~/pierre-icons";
 import { createFileTreeDragMentionController } from "./fileTreeDragMention";
 import { areAllDirectoriesExpanded, setAllDirectoriesExpanded } from "./fileTreeExpansion";
 import { buildFileTreePathUpdates } from "./fileTreePathReconciliation";
-import { useProjectEntriesQuery } from "./projectFilesQueryState";
+import {
+  countProjectFiles,
+  prefetchProjectFileQuery,
+  prefetchableFileTreePath,
+  projectFilePrefetchHoverDecision,
+  useProjectEntriesQuery,
+} from "./projectFilesQueryState";
 
 interface FileBrowserPanelProps {
   environmentId: EnvironmentId;
@@ -49,6 +55,8 @@ const TREE_UNSAFE_CSS = `
   }
   button[data-type='item'] { border-radius: 5px; }
 `;
+
+const FILE_PREFETCH_HOVER_INTENT_MS = 75;
 
 function treePath(entry: ProjectEntry): string {
   return entry.kind === "directory" ? `${entry.path}/` : entry.path;
@@ -117,6 +125,7 @@ export default function FileBrowserPanel({
   const composerRef = useComposerHandleContext();
   const entriesQuery = useProjectEntriesQuery(environmentId, cwd);
   const entries = entriesQuery.data?.entries ?? [];
+  const fileCount = useMemo(() => countProjectFiles(entries), [entries]);
   const entryKinds = useMemo(
     () => new Map(entries.map((entry) => [entry.path, entry.kind] as const)),
     [entries],
@@ -131,6 +140,16 @@ export default function FileBrowserPanel({
   const syncingSelectionRef = useRef(false);
   const treeSelectionPathRef = useRef<string | null>(null);
   const handledRevealRef = useRef<{ path: string; revealId: number } | null>(null);
+  const prefetchScope = `${environmentId}\0${cwd}`;
+  const [prefetchedFile, setPrefetchedFile] = useState<{
+    readonly path: string;
+    readonly scope: string;
+  } | null>(null);
+  const prefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduledPrefetchPathRef = useRef<string | null>(null);
+  const activePrefetchKeyRef = useRef<string | null>(null);
+  const inflightPrefetchPathsRef = useRef(new Set<string>());
+  const prefetchedFilePathsRef = useRef(new Set<string>());
 
   // The tree renders rows in shadow DOM and its anchor rect is unreliable, so
   // capture the right-click position ourselves; contextmenu is a composed
@@ -364,6 +383,79 @@ export default function FileBrowserPanel({
   }, [model]);
   useEffect(() => {
     const panel = panelRef.current;
+    if (panel === null) return;
+
+    const cancelScheduledPrefetch = () => {
+      if (prefetchTimerRef.current !== null) clearTimeout(prefetchTimerRef.current);
+      prefetchTimerRef.current = null;
+      scheduledPrefetchPathRef.current = null;
+    };
+    const handlePointerLeave = () => {
+      activePrefetchKeyRef.current = null;
+      cancelScheduledPrefetch();
+    };
+    const handlePointerOver = (event: PointerEvent) => {
+      const treeItem = event
+        .composedPath()
+        .find(
+          (candidate): candidate is Element =>
+            candidate instanceof Element && candidate.matches("[role='treeitem'][data-item-path]"),
+        );
+      const path = prefetchableFileTreePath(
+        treeItem?.getAttribute("data-item-path") ?? null,
+        entryKindsRef.current,
+      );
+      if (path === null) {
+        activePrefetchKeyRef.current = null;
+        cancelScheduledPrefetch();
+        return;
+      }
+      const prefetchKey = `${prefetchScope}\0${path}`;
+      activePrefetchKeyRef.current = prefetchKey;
+      const decision = projectFilePrefetchHoverDecision({
+        cached: prefetchedFilePathsRef.current.has(prefetchKey),
+        inflight: inflightPrefetchPathsRef.current.has(prefetchKey),
+        nextPath: path,
+        scheduledPath: scheduledPrefetchPathRef.current,
+      });
+      if (decision.cancelScheduled) cancelScheduledPrefetch();
+      if (decision.action === "mark-ready") {
+        setPrefetchedFile((current) =>
+          current?.path === path && current.scope === prefetchScope
+            ? current
+            : { path, scope: prefetchScope },
+        );
+        return;
+      }
+      if (decision.action === "wait" || decision.action === "keep-scheduled") return;
+
+      cancelScheduledPrefetch();
+      scheduledPrefetchPathRef.current = path;
+      prefetchTimerRef.current = setTimeout(() => {
+        prefetchTimerRef.current = null;
+        scheduledPrefetchPathRef.current = null;
+        inflightPrefetchPathsRef.current.add(prefetchKey);
+        void prefetchProjectFileQuery(environmentId, cwd, path)
+          .then((file) => {
+            if (file?.relativePath !== path || file.truncated) return;
+            prefetchedFilePathsRef.current.add(prefetchKey);
+            if (activePrefetchKeyRef.current === prefetchKey)
+              setPrefetchedFile({ path, scope: prefetchScope });
+          })
+          .finally(() => inflightPrefetchPathsRef.current.delete(prefetchKey));
+      }, FILE_PREFETCH_HOVER_INTENT_MS);
+    };
+
+    panel.addEventListener("pointerover", handlePointerOver);
+    panel.addEventListener("pointerleave", handlePointerLeave);
+    return () => {
+      panel.removeEventListener("pointerover", handlePointerOver);
+      panel.removeEventListener("pointerleave", handlePointerLeave);
+      handlePointerLeave();
+    };
+  }, [cwd, environmentId, prefetchScope]);
+  useEffect(() => {
+    const panel = panelRef.current;
     if (panel === null) {
       return;
     }
@@ -382,6 +474,20 @@ export default function FileBrowserPanel({
       ref={panelRef}
       className="flex min-h-0 flex-1 flex-col bg-background"
       data-file-browser-panel={`${environmentId}:${cwd}`}
+      data-right-panel-data-state={
+        entriesQuery.data !== null
+          ? "ready"
+          : entriesQuery.error
+            ? "error"
+            : entriesQuery.isPending
+              ? "loading"
+              : "idle"
+      }
+      data-right-panel-entry-count={entries.length}
+      data-right-panel-file-count={fileCount}
+      data-project-file-prefetch-ready={
+        prefetchedFile?.scope === prefetchScope ? prefetchedFile.path : undefined
+      }
     >
       <div
         className="flex h-10 min-h-10 shrink-0 items-center gap-1 border-b border-border/60 bg-background px-2 in-data-[preview-panel-mode=inline]:mb-3 in-data-[preview-panel-mode=inline]:h-7 in-data-[preview-panel-mode=inline]:min-h-7 in-data-[preview-panel-mode=inline]:border-b-transparent"

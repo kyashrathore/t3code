@@ -44,6 +44,8 @@ import { PierreEntryIcon } from "./chat/PierreEntryIcon";
 
 interface RightPanelTabsProps {
   mode: PreviewPanelMode;
+  /** Canonical owner for content whose surface identity can be shared by many threads. */
+  ownerThreadKey?: string;
   maximized?: boolean;
   /** Forwarded to PreviewPanelShell so this surface persists its own width. */
   widthStorageKey?: string;
@@ -815,6 +817,8 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
                 <div
                   key={surface.id}
                   data-active-tab={active}
+                  data-right-panel-surface-id={surface.id}
+                  data-right-panel-surface-kind={surface.kind}
                   onMouseDown={handleTabMouseDown}
                   onAuxClick={(event) => handleTabAuxClick(event, surface)}
                   onContextMenu={(event) => void handleTabContextMenu(event, surface)}
@@ -931,7 +935,15 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
         </ScrollArea>
         {props.layoutControls}
       </div>
-      <div className="flex min-h-0 flex-1 flex-col" data-right-panel-surface-content>
+      <div
+        className="flex min-h-0 flex-1 flex-col"
+        data-right-panel-surface-content
+        data-right-panel-owner-thread-key={props.ownerThreadKey}
+        data-right-panel-active-surface-id={props.activeSurfaceId ?? undefined}
+        data-right-panel-active-surface-kind={
+          props.surfaces.find((surface) => surface.id === props.activeSurfaceId)?.kind
+        }
+      >
         {props.activeSurfaceId === null ? (
           <RightPanelEmptyState
             onAddBrowser={props.onAddBrowser}

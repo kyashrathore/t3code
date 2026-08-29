@@ -87,6 +87,7 @@ function renderTabs(
   return renderToStaticMarkup(
     <RightPanelTabs
       mode="inline"
+      ownerThreadKey="environment-local:thread-1"
       surfaces={second ? [previewSurface, secondSurface] : [previewSurface]}
       activeSurfaceId={previewSurface.id}
       pendingSurfaceIds={new Set()}
@@ -123,6 +124,11 @@ function renderTabs(
 }
 
 describe("RightPanelTabs preview favicon", () => {
+  it("exposes the canonical thread owner on rendered panel content", () => {
+    expect(renderTabs(null)).toContain(
+      'data-right-panel-owner-thread-key="environment-local:thread-1"',
+    );
+  });
   it("prefers a live capture and never asks Google about a private hostname", () => {
     const captured = renderTabs(favicon("data:image/png;base64,AAAA", "http://24x.xf.local/"));
     expect(captured).toContain("data:image/png;base64,AAAA");

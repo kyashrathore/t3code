@@ -22,6 +22,9 @@ export function DiffPanelShell(props: {
   mode: DiffPanelMode;
   header: ReactNode;
   children: ReactNode;
+  dataState?: "idle" | "loading" | "ready" | "empty" | "error";
+  fileCount?: number;
+  truncated?: boolean;
 }) {
   const shouldUseDragRegion = isElectron && props.mode !== "sheet" && props.mode !== "embedded";
 
@@ -33,6 +36,10 @@ export function DiffPanelShell(props: {
           ? "w-[42vw] min-w-[360px] max-w-[560px] shrink-0 border-l border-border"
           : "w-full",
       )}
+      data-right-panel-surface-kind="diff"
+      data-right-panel-data-state={props.dataState}
+      data-right-panel-file-count={props.fileCount}
+      data-right-panel-truncated={props.truncated ? "true" : "false"}
     >
       {shouldUseDragRegion ? (
         <div className={getDiffPanelHeaderRowClassName(props.mode)}>{props.header}</div>

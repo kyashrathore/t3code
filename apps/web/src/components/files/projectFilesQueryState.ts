@@ -1,6 +1,7 @@
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import type {
   EnvironmentId,
+  ProjectEntry,
   ProjectListEntriesResult,
   ProjectReadFileResult,
 } from "@t3tools/contracts";
@@ -33,6 +34,39 @@ interface ProjectQueryState<A> {
   readonly refresh: () => void;
 }
 
+export function countProjectFiles(entries: ReadonlyArray<ProjectEntry>): number {
+  return entries.reduce((count, entry) => count + (entry.kind === "file" ? 1 : 0), 0);
+}
+
+export function prefetchableFileTreePath(
+  itemPath: string | null,
+  entryKinds: ReadonlyMap<string, ProjectEntry["kind"]>,
+): string | null {
+  if (itemPath === null || itemPath.endsWith("/")) return null;
+  return entryKinds.get(itemPath) === "file" ? itemPath : null;
+}
+
+export function projectFilePrefetchHoverDecision(input: {
+  readonly cached: boolean;
+  readonly inflight: boolean;
+  readonly nextPath: string;
+  readonly scheduledPath: string | null;
+}): {
+  readonly action: "mark-ready" | "wait" | "keep-scheduled" | "schedule";
+  readonly cancelScheduled: boolean;
+} {
+  return {
+    cancelScheduled: input.scheduledPath !== null && input.scheduledPath !== input.nextPath,
+    action: input.cached
+      ? "mark-ready"
+      : input.inflight
+        ? "wait"
+        : input.scheduledPath === input.nextPath
+          ? "keep-scheduled"
+          : "schedule",
+  };
+}
+
 export function getProjectEntriesQueryAtom(environmentId: EnvironmentId, cwd: string) {
   return projectEnvironment.listEntries({ environmentId, input: { cwd } });
 }
@@ -46,6 +80,24 @@ export function getProjectFileQueryAtom(
     environmentId,
     input: { cwd, relativePath: relativePath ?? EMPTY_PROJECT_FILE_PATH },
   });
+}
+
+/**
+ * Warms the same idle-TTL query atom consumed by FilePreviewPanel without
+ * creating a file surface. Callers must still treat truncated reads as
+ * incomplete; this function returns the authoritative RPC result unchanged.
+ */
+export async function prefetchProjectFileQuery(
+  environmentId: EnvironmentId,
+  cwd: string,
+  relativePath: string,
+): Promise<ProjectReadFileResult | null> {
+  const result = await executeAtomQuery(
+    appAtomRegistry,
+    getProjectFileQueryAtom(environmentId, cwd, relativePath),
+    { reportDefect: false, reportFailure: false },
+  );
+  return result._tag === "Success" ? result.value : null;
 }
 
 export function setProjectFileQueryData(

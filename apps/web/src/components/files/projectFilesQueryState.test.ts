@@ -4,8 +4,11 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
   clearProjectFileQueryData,
+  countProjectFiles,
   confirmProjectFileQueryData,
   getOptimisticProjectFileQueryData,
+  prefetchableFileTreePath,
+  projectFilePrefetchHoverDecision,
   resolveProjectFileQueryData,
   setProjectFileQueryData,
 } from "./projectFilesQueryState";
@@ -16,6 +19,53 @@ describe("project files queries", () => {
   afterEach(() => {
     clearProjectFileQueryData(environmentId, "/repo", "convex.json");
     vi.unstubAllGlobals();
+  });
+
+  it("counts files without letting directory entries satisfy file readiness", () => {
+    expect(
+      countProjectFiles([
+        { kind: "directory", path: "src" },
+        { kind: "directory", path: "src/components" },
+        { kind: "file", path: "src/index.ts" },
+      ]),
+    ).toBe(1);
+  });
+
+  it("prefetches only canonical file rows, never directory rows", () => {
+    const entryKinds = new Map([
+      ["src", "directory"],
+      ["src/index.ts", "file"],
+    ] as const);
+    expect(prefetchableFileTreePath("src/index.ts", entryKinds)).toBe("src/index.ts");
+    expect(prefetchableFileTreePath("src/", entryKinds)).toBeNull();
+    expect(prefetchableFileTreePath("missing.ts", entryKinds)).toBeNull();
+  });
+
+  it("cancels the previous row timer before cached and in-flight early returns", () => {
+    expect(
+      projectFilePrefetchHoverDecision({
+        cached: true,
+        inflight: false,
+        nextPath: "src/b.ts",
+        scheduledPath: "src/a.ts",
+      }),
+    ).toEqual({ action: "mark-ready", cancelScheduled: true });
+    expect(
+      projectFilePrefetchHoverDecision({
+        cached: false,
+        inflight: true,
+        nextPath: "src/b.ts",
+        scheduledPath: "src/a.ts",
+      }),
+    ).toEqual({ action: "wait", cancelScheduled: true });
+    expect(
+      projectFilePrefetchHoverDecision({
+        cached: false,
+        inflight: false,
+        nextPath: "src/a.ts",
+        scheduledPath: "src/a.ts",
+      }),
+    ).toEqual({ action: "keep-scheduled", cancelScheduled: false });
   });
 
   it("keeps the latest optimistic draft when an older write finishes", () => {

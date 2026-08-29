@@ -64,6 +64,7 @@ import { installFileEditorDismissal } from "./fileEditorDismissal";
 import { resolveCenteredFileLineScrollTop } from "./fileLineReveal";
 import { DiffCommentAnnotation } from "../diffs/DiffCommentAnnotation";
 import { projectFileCacheKey, projectFileEditorCacheKey } from "./fileContentRevision";
+import { resolveFilePreviewReadiness } from "./filePreviewReadiness";
 import { isMarkdownPreviewFile, setMarkdownTaskChecked } from "./filePreviewMode";
 import { FileSaveCoordinator } from "./fileSaveCoordinator";
 import {
@@ -991,13 +992,32 @@ export default function FilePreviewPanel({
     isPreviewSupportedInRuntime() &&
     isBrowserPreviewFile(relativePath);
   const absolutePath = relativePath ? resolvePathLinkTarget(relativePath, cwd) : null;
-  const onFilePostRender = useFileLineReveal(relativePath, revealLine, revealRequestId);
+  const revealFilePostRender = useFileLineReveal(relativePath, revealLine, revealRequestId);
   useWorkspaceMutationRefresh({
     enabled: relativePath !== null && !isMedia && !isPdf && !selectedFilePending,
     mutationId: workspaceMutationId,
     refresh: file.refresh,
     resourceKey: `file:${environmentId}:${cwd}:${relativePath ?? ""}`,
   });
+  const [paintedFileRevision, setPaintedFileRevision] = useState<string | null>(null);
+  const previewReadiness = useMemo(
+    () =>
+      resolveFilePreviewReadiness({
+        relativePath,
+        contents: file.data?.contents ?? null,
+        error: file.error,
+        isPending: file.isPending,
+        paintedRevision: paintedFileRevision,
+      }),
+    [file.data?.contents, file.error, file.isPending, paintedFileRevision, relativePath],
+  );
+  const onFilePostRender = useCallback<FilePostRender>(
+    (...args) => {
+      revealFilePostRender(...args);
+      if (previewReadiness.revision !== null) setPaintedFileRevision(previewReadiness.revision);
+    },
+    [previewReadiness.revision, revealFilePostRender],
+  );
 
   useEffect(() => {
     const currentCrumb = breadcrumbRef.current?.querySelector<HTMLElement>(
@@ -1044,7 +1064,13 @@ export default function FilePreviewPanel({
   }, [absolutePath, createAssetUrl, cwd, environmentHttpBaseUrl, openPreview, threadRef]);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
+    <div
+      className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background"
+      data-file-preview-path={relativePath ?? undefined}
+      data-file-preview-data-state={previewReadiness.dataState}
+      data-file-preview-render-state={previewReadiness.renderState}
+      data-file-preview-content-revision={previewReadiness.revision ?? undefined}
+    >
       {relativePath ? (
         <div
           className="flex h-10 min-h-10 shrink-0 items-center gap-2 border-b border-border/60 bg-background px-3 in-data-[preview-panel-mode=inline]:mb-3 in-data-[preview-panel-mode=inline]:h-7 in-data-[preview-panel-mode=inline]:min-h-7 in-data-[preview-panel-mode=inline]:border-b-transparent"

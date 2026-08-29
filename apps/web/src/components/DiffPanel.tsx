@@ -829,7 +829,23 @@ export default function DiffPanel({
   );
 
   return (
-    <DiffPanelShell mode={mode} header={headerRow}>
+    <DiffPanelShell
+      mode={mode}
+      header={headerRow}
+      dataState={
+        hasResolvedPatch
+          ? hasNoNetChanges
+            ? "empty"
+            : "ready"
+          : selectedPatchError
+            ? "error"
+            : isLoadingSelectedPatch
+              ? "loading"
+              : "idle"
+      }
+      fileCount={renderableFiles.length}
+      truncated={isSelectedPatchTruncated}
+    >
       {!activeThread ? (
         <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
           Select a thread to inspect turn diffs.
