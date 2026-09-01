@@ -1210,6 +1210,10 @@ async function beginRendererTrace(
       };
       const frame = (at) => {
         if (!trace.active) return;
+        // Frames before the trusted input are not part of the observation; keep only the
+        // last one so a slow actionability wait between arming and the click cannot use
+        // up the cap and leave the measured interval without frame evidence.
+        if (trace.trustedInputAt === undefined) trace.frames.length = 0;
         if (trace.frames.length < 480) trace.frames.push({ at });
         if (trace.trustedInputAt !== undefined && trace.shellVisibleAt === undefined) {
           const shell = document.querySelector('[data-right-panel-tabbar]');
@@ -1503,6 +1507,15 @@ async function waitForStableElement(
       const frame = (at) => {
         const observation = globalThis.__t3ReadinessObservations?.get(${JSON.stringify(observationId)});
         if (observation?.cancelled) return reject(new Error("T3 readiness observation was cancelled."));
+        const trace = globalThis.__t3WorkspacePanelTrace;
+        // Inside a measured action only frames after the trusted input count towards the
+        // two-presentation stability rule, so a pre-input sample can never satisfy it and
+        // every valid observation carries at least two frames inside its interval.
+        if (trace?.active && (trace.trustedInputAt === undefined || at < trace.trustedInputAt)) {
+          previous = undefined;
+          requestAnimationFrame(frame);
+          return;
+        }
         const element = document.querySelector(${JSON.stringify(selector)});
         let sample;
         if (element instanceof HTMLElement) {
@@ -1539,6 +1552,16 @@ async function waitForPanelAnimationSettled(
       const frame = (at) => {
         const observation = globalThis.__t3ReadinessObservations?.get(${JSON.stringify(observationId)});
         if (observation?.cancelled) return reject(new Error("T3 panel animation observation was cancelled."));
+        const trace = globalThis.__t3WorkspacePanelTrace;
+        // Inside a measured action only frames after the trusted input count towards the
+        // two-presentation stability rule, so a pre-input sample can never satisfy it and
+        // every valid observation carries at least two frames inside its interval.
+        if (trace?.active && (trace.trustedInputAt === undefined || at < trace.trustedInputAt)) {
+          previous = undefined;
+          stableFrames = 0;
+          requestAnimationFrame(frame);
+          return;
+        }
         const shell = document.querySelector('[data-right-panel-tabbar]');
         if (shell instanceof HTMLElement) {
           const rect = shell.getBoundingClientRect();
@@ -1569,10 +1592,16 @@ async function waitForPanelClosed(page: PlaywrightPage, observationId?: string):
       const frame = (at) => {
         const observation = globalThis.__t3ReadinessObservations?.get(${JSON.stringify(observationId)});
         if (observation?.cancelled) return reject(new Error("T3 panel-close observation was cancelled."));
+        const trace = globalThis.__t3WorkspacePanelTrace;
+        if (trace?.active && (trace.trustedInputAt === undefined || at < trace.trustedInputAt)) {
+          absentFrames = 0;
+          requestAnimationFrame(frame);
+          return;
+        }
         absentFrames = document.querySelector('[data-right-panel-tabbar]') === null
           ? absentFrames + 1
           : 0;
-        if (absentFrames >= 2) return resolve(at);
+        if (absentFrames >= 2) return resolve(performance.now());
         if (performance.now() >= deadline) return reject(new Error("Right panel did not remain closed for two presentations."));
         requestAnimationFrame(frame);
       };
@@ -1731,6 +1760,11 @@ async function waitForCanonicalReviewModel(
       const frame = (at) => {
         const observation = globalThis.__t3ReadinessObservations?.get(${JSON.stringify(observationId)});
         if (observation?.cancelled) return reject(new Error('T3 Review model observation was cancelled.'));
+        const trace = globalThis.__t3WorkspacePanelTrace;
+        if (trace?.active && (trace.trustedInputAt === undefined || at < trace.trustedInputAt)) {
+          requestAnimationFrame(frame);
+          return;
+        }
         const panel = document.querySelector('[data-right-panel-surface-kind="diff"][data-right-panel-data-state]');
         if (panel instanceof HTMLElement) {
           const snapshot = {
@@ -1990,6 +2024,7 @@ async function prepareDataWarmSurfaceColdFile(
   let mounted = false;
   try {
     if (!row.hover) throw new Error("T3 open-file cannot hover its canonical target row.");
+    await dismissVisibleToasts(page);
     await row.hover();
     await waitForProjectFilePrefetch(page, relativePath);
   } finally {
@@ -2169,6 +2204,24 @@ async function reloadSeededApplication(
   await waitForSessionList(page);
   await ensureWorkItemsRendered(page, expectedSessionCount);
   await activateWorkItem(page, target, 6);
+  await dismissVisibleToasts(page);
+}
+
+/**
+ * Launch notifications (for example the provider-update advisory) float over the
+ * panel column and intercept pointer input aimed at the file tree. A user
+ * dismisses them before working; untimed setup does the same through the
+ * toast's own close control, never by hiding the surface.
+ */
+async function dismissVisibleToasts(page: PlaywrightPage): Promise<void> {
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const closeButtons = page.locator('button[data-slot="toast-close"]').filter({ visible: true });
+    if ((await closeButtons.count()) === 0) return;
+    await closeButtons.first().click();
+    await page.evaluate<void>(
+      "new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))",
+    );
+  }
 }
 
 async function clickPanelToggle(page: PlaywrightPage): Promise<void> {
