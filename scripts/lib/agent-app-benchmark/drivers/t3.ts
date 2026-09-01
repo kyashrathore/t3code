@@ -902,7 +902,7 @@ async function waitForComposerUsable(
           return bounds.width > 0 && bounds.height > 0 && composer.getAttribute("aria-disabled") !== "true" && !composer.hasAttribute("disabled");
         })();
         usableFrames = usable ? usableFrames + 1 : 0;
-        if (usableFrames >= 2) return resolve(at);
+        if (usableFrames >= 2) return resolve(performance.now());
         if (performance.now() >= deadline) return reject(new Error("T3 composer did not become stably usable."));
         requestAnimationFrame(frame);
       };
@@ -1003,7 +1003,10 @@ async function waitForSemanticTimelinePaint(
         const observation = globalThis.__t3ReadinessObservations?.get(${JSON.stringify(observationId)});
         if (observation?.cancelled) return reject(new Error("T3 session readiness observation was cancelled."));
         const current = sample();
-        if (current !== undefined && current === previous) return resolve(paintedAt);
+        // The endpoint is the moment the second identical sample is observed. A rAF timestamp
+        // is the frame's scheduled start and precedes the observation by the main thread's
+        // lateness, which would discount the busier application more.
+        if (current !== undefined && current === previous) return resolve(performance.now());
         previous = current;
         if (performance.now() >= deadline) return reject(new Error("T3 did not paint stable canonical session content."));
         requestAnimationFrame(frame);
@@ -1510,7 +1513,7 @@ async function waitForStableElement(
             sample = JSON.stringify([Math.round(rect.width * 10), Math.round(rect.height * 10), element.innerText.trim().length, canonical]);
           }
         }
-        if (sample !== undefined && sample === previous) return resolve(at);
+        if (sample !== undefined && sample === previous) return resolve(performance.now());
         previous = sample;
         if (performance.now() >= deadline) return reject(new Error("Canonical element did not reach a stable painted state: " + ${JSON.stringify(selector)}));
         requestAnimationFrame(frame);
@@ -1548,7 +1551,7 @@ async function waitForPanelAnimationSettled(
           ]);
           stableFrames = sample === previous ? stableFrames + 1 : 0;
           previous = sample;
-          if (stableFrames >= 2) return resolve(at);
+          if (stableFrames >= 2) return resolve(performance.now());
         }
         if (performance.now() >= deadline) return reject(new Error('T3 right-panel animation did not settle.'));
         requestAnimationFrame(frame);
@@ -1739,7 +1742,7 @@ async function waitForCanonicalReviewModel(
           const ownerReady = ${ownerSessionId === undefined ? "true" : `snapshot.ownerThreadKey !== null && snapshot.ownerThreadKey.endsWith(${JSON.stringify(`:${ownerSessionId}`)})`};
           const failure = (${canonicalReviewModelFailure.toString()})(snapshot, ${canonicalFileCount}, ${JSON.stringify(ownerSessionId)});
           if (failure) return reject(new Error(failure));
-          if (ownerReady && snapshot.dataState === 'ready') return resolve(at);
+          if (ownerReady && snapshot.dataState === 'ready') return resolve(performance.now());
           if (ownerReady && snapshot.dataState === 'error') return reject(new Error('T3 product Review preview failed to resolve the canonical workspace fixture.'));
         }
         if (performance.now() >= deadline) return reject(new Error('T3 product Review preview did not resolve the canonical workspace fixture.'));
