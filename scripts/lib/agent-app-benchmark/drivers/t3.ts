@@ -2203,8 +2203,8 @@ async function clickPanelToggle(page: PlaywrightPage): Promise<void> {
 }
 
 async function ensurePanelClosed(page: PlaywrightPage): Promise<void> {
-  const open = await page.evaluate(
-    () => document.querySelector("[data-right-panel-tabbar]") !== null,
+  const open = await page.evaluate<boolean>(
+    'document.querySelector("[data-right-panel-tabbar]") !== null',
   );
   if (open) await clickPanelToggle(page);
   await waitForPanelClosed(page);
