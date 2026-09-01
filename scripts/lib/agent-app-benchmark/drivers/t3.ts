@@ -1215,12 +1215,14 @@ async function beginRendererTrace(
         // up the cap and leave the measured interval without frame evidence.
         if (trace.trustedInputAt === undefined) trace.frames.length = 0;
         if (trace.frames.length < 480) trace.frames.push({ at });
-        if (trace.trustedInputAt !== undefined && trace.shellVisibleAt === undefined) {
+        // Shell visibility is stamped at observation time, and only from frames after
+        // the trusted input: the input frame's rAF timestamp precedes the input itself.
+        if (trace.trustedInputAt !== undefined && at >= trace.trustedInputAt && trace.shellVisibleAt === undefined) {
           const shell = document.querySelector('[data-right-panel-tabbar]');
           if (shell instanceof HTMLElement) {
             const rect = shell.getBoundingClientRect();
             const style = getComputedStyle(shell);
-            if (rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden') trace.shellVisibleAt = at;
+            if (rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden') trace.shellVisibleAt = performance.now();
           }
         }
         requestAnimationFrame(frame);
@@ -2215,9 +2217,16 @@ async function reloadSeededApplication(
  */
 async function dismissVisibleToasts(page: PlaywrightPage): Promise<void> {
   for (let attempt = 0; attempt < 6; attempt += 1) {
-    const closeButtons = page.locator('button[data-slot="toast-close"]').filter({ visible: true });
-    if ((await closeButtons.count()) === 0) return;
-    await closeButtons.first().click();
+    // The corner control is reachable by keyboard and by a DOM click; a pointer click
+    // through actionability checks waited out its entrance transition for 30 s.
+    const dismissed = await page.evaluate<number>(`
+      (() => {
+        const buttons = Array.from(document.querySelectorAll('button[data-slot="toast-close"]'));
+        for (const button of buttons) button.click();
+        return buttons.length;
+      })()
+    `);
+    if (dismissed === 0) return;
     await page.evaluate<void>(
       "new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))",
     );
