@@ -1295,8 +1295,11 @@ async function completeRendererTrace(page: PlaywrightPage): Promise<void> {
       if (!trace?.active) throw new Error("No active renderer trace.");
       const interactive = trace.milestones.findLast((item) => item.id === "interactive");
       if (!interactive) throw new Error("The measured action has no interactive endpoint.");
-      const at = performance.mark(${JSON.stringify(COUNTER_END_MARK)}).startTime;
-      interactive.at = at;
+      // The endpoint is the renderer-observed interactive milestone. The counter end mark is
+      // back-dated to it so the driver's own CDP round-trips after readiness stay outside both
+      // the clock and the counter window.
+      const at = interactive.at;
+      performance.mark(${JSON.stringify(COUNTER_END_MARK)}, { startTime: at });
       trace.milestones.push({ id: "complete", at });
     })()
   `);
@@ -1494,7 +1497,7 @@ async function waitForStableElement(
     new Promise((resolve, reject) => {
       const deadline = performance.now() + ${timeoutMs};
       let previous;
-      const frame = () => {
+      const frame = (at) => {
         const observation = globalThis.__t3ReadinessObservations?.get(${JSON.stringify(observationId)});
         if (observation?.cancelled) return reject(new Error("T3 readiness observation was cancelled."));
         const element = document.querySelector(${JSON.stringify(selector)});
@@ -1507,7 +1510,7 @@ async function waitForStableElement(
             sample = JSON.stringify([Math.round(rect.width * 10), Math.round(rect.height * 10), element.innerText.trim().length, canonical]);
           }
         }
-        if (sample !== undefined && sample === previous) return resolve(performance.now());
+        if (sample !== undefined && sample === previous) return resolve(at);
         previous = sample;
         if (performance.now() >= deadline) return reject(new Error("Canonical element did not reach a stable painted state: " + ${JSON.stringify(selector)}));
         requestAnimationFrame(frame);
@@ -1530,7 +1533,7 @@ async function waitForPanelAnimationSettled(
       const deadline = performance.now() + ${READINESS_TIMEOUT_MS};
       let previous;
       let stableFrames = 0;
-      const frame = () => {
+      const frame = (at) => {
         const observation = globalThis.__t3ReadinessObservations?.get(${JSON.stringify(observationId)});
         if (observation?.cancelled) return reject(new Error("T3 panel animation observation was cancelled."));
         const shell = document.querySelector('[data-right-panel-tabbar]');
@@ -1545,7 +1548,7 @@ async function waitForPanelAnimationSettled(
           ]);
           stableFrames = sample === previous ? stableFrames + 1 : 0;
           previous = sample;
-          if (stableFrames >= 2) return resolve(performance.now());
+          if (stableFrames >= 2) return resolve(at);
         }
         if (performance.now() >= deadline) return reject(new Error('T3 right-panel animation did not settle.'));
         requestAnimationFrame(frame);
@@ -1722,7 +1725,7 @@ async function waitForCanonicalReviewModel(
   return page.evaluate<number>(`
     new Promise((resolve, reject) => {
       const deadline = performance.now() + ${timeoutMs};
-      const frame = () => {
+      const frame = (at) => {
         const observation = globalThis.__t3ReadinessObservations?.get(${JSON.stringify(observationId)});
         if (observation?.cancelled) return reject(new Error('T3 Review model observation was cancelled.'));
         const panel = document.querySelector('[data-right-panel-surface-kind="diff"][data-right-panel-data-state]');
@@ -1736,7 +1739,7 @@ async function waitForCanonicalReviewModel(
           const ownerReady = ${ownerSessionId === undefined ? "true" : `snapshot.ownerThreadKey !== null && snapshot.ownerThreadKey.endsWith(${JSON.stringify(`:${ownerSessionId}`)})`};
           const failure = (${canonicalReviewModelFailure.toString()})(snapshot, ${canonicalFileCount}, ${JSON.stringify(ownerSessionId)});
           if (failure) return reject(new Error(failure));
-          if (ownerReady && snapshot.dataState === 'ready') return resolve(performance.now());
+          if (ownerReady && snapshot.dataState === 'ready') return resolve(at);
           if (ownerReady && snapshot.dataState === 'error') return reject(new Error('T3 product Review preview failed to resolve the canonical workspace fixture.'));
         }
         if (performance.now() >= deadline) return reject(new Error('T3 product Review preview did not resolve the canonical workspace fixture.'));
@@ -1897,39 +1900,6 @@ async function observePanelReady(
     ...(observationId === undefined ? {} : { observationId }),
   });
   return Math.max(...(await Promise.all([owner, shell, content])));
-}
-
-async function waitForExpandAllResponsive(
-  page: PlaywrightPage,
-  fixture: WorkspaceFixtureEvidence,
-  observationId?: string,
-): Promise<number> {
-  return waitForStableElement(
-    page,
-    '[data-right-panel-surface-kind="diff"][data-right-panel-data-state]',
-    `
-      const roots = [element];
-      for (let index = 0; index < roots.length; index += 1) {
-        for (const child of roots[index].querySelectorAll('*')) if (child.shadowRoot) roots.push(child.shadowRoot);
-      }
-      const canonical = new Set(${JSON.stringify(fixture.diffPaths)});
-      const headerPaths = roots.flatMap((root) => Array.from(root.querySelectorAll('[data-diffs-header] [data-title]'))
-        .map((node) => node.textContent?.trim() ?? '')
-        .filter(Boolean));
-      const collapseAll = element.querySelector('button[aria-label="Collapse all files"]');
-      const loading = roots.some((root) => Boolean(root.querySelector('[data-slot="skeleton"],[aria-label="Loading"]')))
-        || roots.some((root) => (root.textContent ?? '').includes('Loading '));
-      return element.getAttribute('data-right-panel-data-state') === 'ready'
-        && element.getAttribute('data-right-panel-truncated') !== 'true'
-        && Number(element.getAttribute('data-right-panel-file-count')) === ${fixture.diffCount}
-        && collapseAll instanceof HTMLElement
-        && headerPaths.length > 0
-        && headerPaths.every((path) => canonical.has(path))
-        && !loading;
-    `,
-    READINESS_TIMEOUT_MS,
-    observationId,
-  );
 }
 
 async function waitForOpenFile(
@@ -2860,13 +2830,8 @@ async function makeDefaultDependencies(): Promise<T3DriverDependencies> {
     const { application: app, page: window } = runtime;
     const measureV2Action = (action: () => Promise<void>) =>
       measureTrustedRendererAction(app, window, action, "pointerdown");
-    if (benchmarkCase.action === "expand-all") {
-      await clickSurfaceTab(window, "Diff");
-      await waitForPanelContent(window, "diff", fixture, { strictReview: true });
-      await setAllReviewFilesCollapsed(window, fixture);
-    } else {
-      await seedWorkspacePanelInteractionLoad(window, fixture, load);
-    }
+    await seedWorkspacePanelInteractionLoad(window, fixture, load);
+    if (benchmarkCase.action === "expand-all") await setAllReviewFilesCollapsed(window, fixture);
 
     if (benchmarkCase.action === "open-panel") {
       await clickSurfaceTab(window, "Files");
@@ -2898,7 +2863,11 @@ async function makeDefaultDependencies(): Promise<T3DriverDependencies> {
           await readDataReadyAt(window, "files"),
         );
         await markRendererMilestones(window, ["above-fold-painted"], aboveFoldPaintedAt);
-        await markRendererMilestone(window, "interactive");
+        await markRendererMilestones(
+          window,
+          ["interactive"],
+          Math.max(transitionMode === "none" ? shellAt : animationAt, aboveFoldPaintedAt),
+        );
       });
     }
     if (benchmarkCase.action === "close-panel") {
@@ -2911,8 +2880,7 @@ async function makeDefaultDependencies(): Promise<T3DriverDependencies> {
           (observationId) => waitForPanelClosed(window, observationId),
           () => clickPanelToggle(window),
         );
-        await markRendererMilestones(window, ["action-painted"], actionPaintedAt);
-        await markRendererMilestone(window, "interactive");
+        await markRendererMilestones(window, ["action-painted", "interactive"], actionPaintedAt);
       });
     }
     if (benchmarkCase.action === "files-to-review") {
@@ -2929,8 +2897,7 @@ async function makeDefaultDependencies(): Promise<T3DriverDependencies> {
             }),
           () => clickSurfaceTab(window, "Diff"),
         );
-        await markRendererMilestones(window, ["action-painted"], actionPaintedAt);
-        await markRendererMilestone(window, "interactive");
+        await markRendererMilestones(window, ["action-painted", "interactive"], actionPaintedAt);
       });
     }
     if (benchmarkCase.action === "review-to-files") {
@@ -2944,8 +2911,7 @@ async function makeDefaultDependencies(): Promise<T3DriverDependencies> {
           (observationId) => waitForPanelContent(window, "files", fixture, { observationId }),
           () => clickSurfaceTab(window, "Files"),
         );
-        await markRendererMilestones(window, ["action-painted"], actionPaintedAt);
-        await markRendererMilestone(window, "interactive");
+        await markRendererMilestones(window, ["action-painted", "interactive"], actionPaintedAt);
       });
     }
     if (benchmarkCase.action === "open-file") {
@@ -2968,14 +2934,13 @@ async function makeDefaultDependencies(): Promise<T3DriverDependencies> {
           (observationId) => waitForOpenFile(window, path, observationId),
           () => row.click(),
         );
-        await markRendererMilestones(window, ["action-painted"], actionPaintedAt);
-        await markRendererMilestone(window, "interactive");
+        await markRendererMilestones(window, ["action-painted", "interactive"], actionPaintedAt);
       });
     }
     if (benchmarkCase.action === "switch-file-tab") {
       const paths = fixture.filePaths.slice(0, load.retainedFileTabCount);
       const firstPath = paths[0];
-      const destinationPath = paths.at(-1);
+      const destinationPath = paths[1];
       if (!firstPath || !destinationPath || firstPath === destinationPath)
         throw new Error("T3 switch-file-tab requires at least two retained file tabs.");
       for (const path of paths) {
@@ -2990,8 +2955,7 @@ async function makeDefaultDependencies(): Promise<T3DriverDependencies> {
           (observationId) => waitForOpenFile(window, destinationPath, observationId),
           () => clickSurfaceTab(window, fixtureBasename(destinationPath)),
         );
-        await markRendererMilestones(window, ["action-painted"], actionPaintedAt);
-        await markRendererMilestone(window, "interactive");
+        await markRendererMilestones(window, ["action-painted", "interactive"], actionPaintedAt);
       });
     }
 
@@ -3007,13 +2971,12 @@ async function makeDefaultDependencies(): Promise<T3DriverDependencies> {
       const actionPaintedAt = await runRendererObservedAction(
         window,
         (observationId) =>
-          benchmarkCase.action === "expand-all"
-            ? waitForExpandAllResponsive(window, fixture, observationId)
-            : waitForPanelContent(window, "diff", fixture, {
-                strictReview: true,
-                expandedReviewFileCount: 0,
-                observationId,
-              }),
+          waitForPanelContent(window, "diff", fixture, {
+            strictReview: true,
+            expandedReviewFileCount:
+              benchmarkCase.action === "expand-all" ? fixture.diffPaths.length : 0,
+            observationId,
+          }),
         () =>
           clickUniqueVisible(
             window,
@@ -3021,8 +2984,7 @@ async function makeDefaultDependencies(): Promise<T3DriverDependencies> {
             desiredBefore,
           ),
       );
-      await markRendererMilestones(window, ["action-painted"], actionPaintedAt);
-      await markRendererMilestone(window, "interactive");
+      await markRendererMilestones(window, ["action-painted", "interactive"], actionPaintedAt);
     });
   };
 
