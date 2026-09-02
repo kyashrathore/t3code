@@ -370,18 +370,12 @@ export function createT3PublicDriver(dependencies: T3DriverDependencies): T3Publ
       };
     },
     execute: async (params) => {
-      if (
-        ["workspace-panel-v1", "workspace-panel-v2", "workspace-panel-v3"].includes(
-          params.scenarioId,
-        )
-      ) {
+      if (params.scenarioId === "workspace-panel-v1") {
         if (!active) throw new Error("T3 workspace-panel actions require a running application.");
         if (!("action" in params.case))
           throw new Error("T3 workspace-panel request is missing its action.");
         const benchmarkCase = params.case;
-        if (["workspace-panel-v2", "workspace-panel-v3"].includes(params.scenarioId)) {
-          assertWorkspacePanelV2Case(benchmarkCase);
-        }
+        assertWorkspacePanelV2Case(benchmarkCase);
         const target = resolveTarget(
           benchmarkCase.targetSessionId ?? benchmarkCase.sessionId ?? "control",
         );
@@ -394,12 +388,10 @@ export function createT3PublicDriver(dependencies: T3DriverDependencies): T3Publ
           benchmarkCase.caseId,
           result.clock,
           result.rendererTrace,
-          ["workspace-panel-v2", "workspace-panel-v3"].includes(params.scenarioId)
-            ? "pointerdown"
-            : "click",
+          "pointerdown",
         );
       }
-      if (["session-navigation-v1", "session-navigation-v2"].includes(params.scenarioId)) {
+      if (params.scenarioId === "session-navigation-v1") {
         if (!active) throw new Error("T3 session navigation requires a running application.");
         assertSessionNavigationCase(params.case);
         const benchmarkCase = params.case;
@@ -433,22 +425,7 @@ export function createT3PublicDriver(dependencies: T3DriverDependencies): T3Publ
               },
             };
       }
-      if (params.scenarioId === "session-switch-workspace-panel-v1") {
-        if (!active)
-          throw new Error("T3 panel-profile session switching requires a running application.");
-        if (!("panelProfile" in params.case))
-          throw new Error("T3 panel-profile session-switch request is incomplete.");
-        const benchmarkCase = params.case;
-        const source = resolveTarget(benchmarkCase.sourceSessionId);
-        const destination = resolveTarget(benchmarkCase.destinationSessionId);
-        const result = await dependencies.executeWorkspacePanelSwitch(
-          benchmarkCase,
-          source,
-          destination,
-        );
-        return panelExecution(benchmarkCase.caseId, result.clock, result.rendererTrace);
-      }
-      if (["app-start-v1", "app-start-v3", "app-start-v4"].includes(params.scenarioId)) {
+      if (params.scenarioId === "app-start-v1") {
         if (active) throw new Error("T3 app-start requires no running application.");
         if (!("startMode" in params.case) || !params.stateHandle)
           throw new Error("T3 app-start request is incomplete.");
@@ -458,15 +435,11 @@ export function createT3PublicDriver(dependencies: T3DriverDependencies): T3Publ
         return execution(
           params.case.caseId,
           launch.clock,
-          ["app-start-v3", "app-start-v4"].includes(params.scenarioId)
-            ? withTimingEvidence(launch.readiness, launch.clock.end)
-            : launch.readiness,
+          withTimingEvidence(launch.readiness, launch.clock.end),
         );
       }
       if (
-        !["session-switch-v1", "session-switch-v3", "session-switch-v4"].includes(
-          params.scenarioId,
-        ) ||
+        params.scenarioId !== "session-switch-v1" ||
         "startMode" in params.case ||
         !("workload" in params.case)
       )
@@ -3475,16 +3448,8 @@ async function makeDefaultDependencies(): Promise<T3DriverDependencies> {
       scenarios: [
         "app-start-v1",
         "session-switch-v1",
-        "app-start-v3",
-        "session-switch-v3",
-        "workspace-panel-v1",
-        "session-switch-workspace-panel-v1",
         "session-navigation-v1",
-        "workspace-panel-v2",
-        "app-start-v4",
-        "session-switch-v4",
-        "session-navigation-v2",
-        "workspace-panel-v3",
+        "workspace-panel-v1",
       ],
       sourceEventFormats: ["opencode-event-v1", "opencode-event-v2"],
       materializationModes: ["translated"],
