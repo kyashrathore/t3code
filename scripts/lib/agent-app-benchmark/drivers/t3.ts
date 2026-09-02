@@ -370,12 +370,16 @@ export function createT3PublicDriver(dependencies: T3DriverDependencies): T3Publ
       };
     },
     execute: async (params) => {
-      if (["workspace-panel-v1", "workspace-panel-v2"].includes(params.scenarioId)) {
+      if (
+        ["workspace-panel-v1", "workspace-panel-v2", "workspace-panel-v3"].includes(
+          params.scenarioId,
+        )
+      ) {
         if (!active) throw new Error("T3 workspace-panel actions require a running application.");
         if (!("action" in params.case))
           throw new Error("T3 workspace-panel request is missing its action.");
         const benchmarkCase = params.case;
-        if (params.scenarioId === "workspace-panel-v2") {
+        if (["workspace-panel-v2", "workspace-panel-v3"].includes(params.scenarioId)) {
           assertWorkspacePanelV2Case(benchmarkCase);
         }
         const target = resolveTarget(
@@ -390,10 +394,12 @@ export function createT3PublicDriver(dependencies: T3DriverDependencies): T3Publ
           benchmarkCase.caseId,
           result.clock,
           result.rendererTrace,
-          params.scenarioId === "workspace-panel-v2" ? "pointerdown" : "click",
+          ["workspace-panel-v2", "workspace-panel-v3"].includes(params.scenarioId)
+            ? "pointerdown"
+            : "click",
         );
       }
-      if (params.scenarioId === "session-navigation-v1") {
+      if (["session-navigation-v1", "session-navigation-v2"].includes(params.scenarioId)) {
         if (!active) throw new Error("T3 session navigation requires a running application.");
         assertSessionNavigationCase(params.case);
         const benchmarkCase = params.case;
@@ -442,7 +448,7 @@ export function createT3PublicDriver(dependencies: T3DriverDependencies): T3Publ
         );
         return panelExecution(benchmarkCase.caseId, result.clock, result.rendererTrace);
       }
-      if (["app-start-v1", "app-start-v3"].includes(params.scenarioId)) {
+      if (["app-start-v1", "app-start-v3", "app-start-v4"].includes(params.scenarioId)) {
         if (active) throw new Error("T3 app-start requires no running application.");
         if (!("startMode" in params.case) || !params.stateHandle)
           throw new Error("T3 app-start request is incomplete.");
@@ -452,13 +458,15 @@ export function createT3PublicDriver(dependencies: T3DriverDependencies): T3Publ
         return execution(
           params.case.caseId,
           launch.clock,
-          params.scenarioId === "app-start-v3"
+          ["app-start-v3", "app-start-v4"].includes(params.scenarioId)
             ? withTimingEvidence(launch.readiness, launch.clock.end)
             : launch.readiness,
         );
       }
       if (
-        !["session-switch-v1", "session-switch-v3"].includes(params.scenarioId) ||
+        !["session-switch-v1", "session-switch-v3", "session-switch-v4"].includes(
+          params.scenarioId,
+        ) ||
         "startMode" in params.case ||
         !("workload" in params.case)
       )
@@ -479,7 +487,11 @@ export function createT3PublicDriver(dependencies: T3DriverDependencies): T3Publ
       return execution(
         benchmarkCase.caseId,
         clock,
-        readinessReceipt(params.scenarioId === "session-switch-v3" ? clock.end : undefined),
+        readinessReceipt(
+          ["session-switch-v3", "session-switch-v4"].includes(params.scenarioId)
+            ? clock.end
+            : undefined,
+        ),
       );
     },
     shutdown: async () => {
@@ -524,7 +536,14 @@ const WORKSPACE_PANEL_V2_ACTIONS = new Set<WorkspacePanelV2Action>([
 ]);
 
 function readPanelLoadProfiles(params: PrepareParams): Map<PanelLoadProfileId, PanelLoadProfile> {
-  if (!["session-navigation-v1", "workspace-panel-v2"].includes(params.scenarioId))
+  if (
+    ![
+      "session-navigation-v1",
+      "session-navigation-v2",
+      "workspace-panel-v2",
+      "workspace-panel-v3",
+    ].includes(params.scenarioId)
+  )
     return new Map();
   const cases = params.scenarioDefinition?.cases;
   const panelLoads =
@@ -3462,6 +3481,10 @@ async function makeDefaultDependencies(): Promise<T3DriverDependencies> {
         "session-switch-workspace-panel-v1",
         "session-navigation-v1",
         "workspace-panel-v2",
+        "app-start-v4",
+        "session-switch-v4",
+        "session-navigation-v2",
+        "workspace-panel-v3",
       ],
       sourceEventFormats: ["opencode-event-v1", "opencode-event-v2"],
       materializationModes: ["translated"],
