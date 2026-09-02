@@ -457,15 +457,7 @@ export function createT3PublicDriver(dependencies: T3DriverDependencies): T3Publ
         destination,
         benchmarkCase.workload === "resource-control" ? 6 : 1,
       );
-      return execution(
-        benchmarkCase.caseId,
-        clock,
-        readinessReceipt(
-          ["session-switch-v3", "session-switch-v4"].includes(params.scenarioId)
-            ? clock.end
-            : undefined,
-        ),
-      );
+      return execution(benchmarkCase.caseId, clock, readinessReceipt(clock.end));
     },
     shutdown: async () => {
       const result = await dependencies.shutdown();
@@ -509,14 +501,7 @@ const WORKSPACE_PANEL_V2_ACTIONS = new Set<WorkspacePanelV2Action>([
 ]);
 
 function readPanelLoadProfiles(params: PrepareParams): Map<PanelLoadProfileId, PanelLoadProfile> {
-  if (
-    ![
-      "session-navigation-v1",
-      "session-navigation-v2",
-      "workspace-panel-v2",
-      "workspace-panel-v3",
-    ].includes(params.scenarioId)
-  )
+  if (!["session-navigation-v1", "workspace-panel-v1"].includes(params.scenarioId))
     return new Map();
   const cases = params.scenarioDefinition?.cases;
   const panelLoads =
