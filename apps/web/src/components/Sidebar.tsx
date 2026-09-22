@@ -1580,6 +1580,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
     return (
       <li
         data-thread-item
+        data-thread-id={thread.id}
         {...sortableRootProps}
         {...(fileDropHandlers ?? {})}
         className={cn(
@@ -1733,6 +1734,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   return (
     <li
       data-thread-item
+      data-thread-id={thread.id}
       {...sortableRootProps}
       {...(fileDropHandlers ?? {})}
       className={cn(
