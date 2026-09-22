@@ -507,7 +507,7 @@ const WORKSPACE_PANEL_V2_ACTIONS = new Set<WorkspacePanelV2Action>([
  * latency; the compared driver uses the same ceiling so a return that never
  * becomes ready costs both runs the same bounded wait.
  */
-const RESOURCE_CONTROL_READINESS_TIMEOUT_MS = 10_000;
+const RESOURCE_CONTROL_READINESS_TIMEOUT_MS = 5_000;
 
 const APP_START_SCENARIO_IDS: ReadonlyArray<string> = ["app-start-v1", "app-start-fast-v1"];
 const SESSION_SWITCH_SCENARIO_IDS: ReadonlyArray<string> = [

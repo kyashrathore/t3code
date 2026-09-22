@@ -680,7 +680,7 @@ it("bounds the control return after the progressive resource workload by the sha
     },
   });
   assert.equal(activations.at(-1), "control");
-  assert.equal(activationTimeouts.at(-1), 10_000);
+  assert.equal(activationTimeouts.at(-1), 5_000);
 });
 
 it("measures app start from the exact requested sealed state", async () => {
