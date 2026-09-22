@@ -12,7 +12,7 @@
     "@electron/osx-sign": "2.7.0",
     "@t3tools/shared": "workspace:*",
     "@t3tools/tailscale": "workspace:*",
-    "agent-app-benchmark": "github:kyashrathore/agent-app-benchmark#f8cc01d828928c75054f272fea48696c938781d4",
+    "agent-app-benchmark": "github:kyashrathore/agent-app-benchmark#3089047b9dfb0b04beb6fc1d9e847f4b7d4f4fed",
     "effect": "catalog:",
     "playwright-core": "1.60.0",
     "pngjs": "7.0.0",

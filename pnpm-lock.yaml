@@ -1044,8 +1044,8 @@ importers:
         specifier: workspace:*
         version: link:../packages/tailscale
       agent-app-benchmark:
-        specifier: github:kyashrathore/agent-app-benchmark#f8cc01d828928c75054f272fea48696c938781d4
-        version: https://codeload.github.com/kyashrathore/agent-app-benchmark/tar.gz/f8cc01d828928c75054f272fea48696c938781d4
+        specifier: github:kyashrathore/agent-app-benchmark#3089047b9dfb0b04beb6fc1d9e847f4b7d4f4fed
+        version: https://codeload.github.com/kyashrathore/agent-app-benchmark/tar.gz/3089047b9dfb0b04beb6fc1d9e847f4b7d4f4fed
       effect:
         specifier: 4.0.0-rc.115
         version: 4.0.0-rc.115(patch_hash=0dfc4bb8ebd80fb3e06b91ef61346f5259517ab0f2437644fe95ae531084b1f5)
@@ -5955,8 +5955,8 @@ packages:
     engines: {node: '>=0.4.0'}
     hasBin: true
 
-  agent-app-benchmark@https://codeload.github.com/kyashrathore/agent-app-benchmark/tar.gz/f8cc01d828928c75054f272fea48696c938781d4:
-    resolution: {gitHosted: true, integrity: sha512-4EU0pJCatxIqxSw340d49V/Kunn+9q+6svQwsDJbtZzG/qhqTb2cVRWp/yIInoLN6Q1kpyKTMlyc+CWHaeOnXA==, tarball: https://codeload.github.com/kyashrathore/agent-app-benchmark/tar.gz/f8cc01d828928c75054f272fea48696c938781d4}
+  agent-app-benchmark@https://codeload.github.com/kyashrathore/agent-app-benchmark/tar.gz/3089047b9dfb0b04beb6fc1d9e847f4b7d4f4fed:
+    resolution: {gitHosted: true, integrity: sha512-RtSwBrO+ycv9f0J5FmJx1qFCl25mWk/0GNqgrt6Y8fysGMU0myxnMw6grH013DEV+1iLWCRqya80AnRNUCmx+Q==, tarball: https://codeload.github.com/kyashrathore/agent-app-benchmark/tar.gz/3089047b9dfb0b04beb6fc1d9e847f4b7d4f4fed}
     version: 0.1.0
     engines: {node: '>=22'}
     hasBin: true
@@ -16107,7 +16107,7 @@ snapshots:
 
   acorn@8.16.0: {}
 
-  agent-app-benchmark@https://codeload.github.com/kyashrathore/agent-app-benchmark/tar.gz/f8cc01d828928c75054f272fea48696c938781d4:
+  agent-app-benchmark@https://codeload.github.com/kyashrathore/agent-app-benchmark/tar.gz/3089047b9dfb0b04beb6fc1d9e847f4b7d4f4fed:
     dependencies:
       ajv: 8.20.0
 
