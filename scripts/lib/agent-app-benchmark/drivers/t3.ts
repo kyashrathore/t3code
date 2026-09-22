@@ -14,7 +14,7 @@ import { serveDriver, type DriverHandlers } from "agent-app-benchmark/driver-sdk
 import type { WorkspaceFixtureManifest } from "agent-app-benchmark/driver-sdk";
 import * as Effect from "effect/Effect";
 import * as Logger from "effect/Logger";
-import { _electron } from "playwright-core";
+import { chromium } from "playwright-core";
 
 import {
   materializeT3PublicCorpus,
@@ -425,7 +425,7 @@ export function createT3PublicDriver(dependencies: T3DriverDependencies): T3Publ
               },
             };
       }
-      if (params.scenarioId === "app-start-v1") {
+      if (APP_START_SCENARIO_IDS.includes(params.scenarioId)) {
         if (active) throw new Error("T3 app-start requires no running application.");
         if (!("startMode" in params.case) || !params.stateHandle)
           throw new Error("T3 app-start request is incomplete.");
@@ -439,7 +439,7 @@ export function createT3PublicDriver(dependencies: T3DriverDependencies): T3Publ
         );
       }
       if (
-        params.scenarioId !== "session-switch-v1" ||
+        !SESSION_SWITCH_SCENARIO_IDS.includes(params.scenarioId) ||
         "startMode" in params.case ||
         !("workload" in params.case)
       )
@@ -499,6 +499,12 @@ const WORKSPACE_PANEL_V2_ACTIONS = new Set<WorkspacePanelV2Action>([
   "expand-all",
   "collapse-all",
 ]);
+
+const APP_START_SCENARIO_IDS: ReadonlyArray<string> = ["app-start-v1", "app-start-fast-v1"];
+const SESSION_SWITCH_SCENARIO_IDS: ReadonlyArray<string> = [
+  "session-switch-v1",
+  "session-switch-fast-v1",
+];
 
 function readPanelLoadProfiles(params: PrepareParams): Map<PanelLoadProfileId, PanelLoadProfile> {
   if (!["session-navigation-v1", "workspace-panel-v1"].includes(params.scenarioId))
@@ -681,17 +687,6 @@ interface PlaywrightElectronApplication {
   readonly process: () => PlaywrightElectronProcess;
   readonly firstWindow: () => Promise<PlaywrightPage>;
   readonly context: () => PlaywrightBrowserContext;
-  readonly evaluate: <A>(
-    fn: (electron: {
-      readonly BrowserWindow: {
-        readonly getAllWindows: () => ReadonlyArray<{
-          readonly isDestroyed: () => boolean;
-          readonly isVisible: () => boolean;
-          readonly maximize: () => void;
-        }>;
-      };
-    }) => A,
-  ) => Promise<A>;
   readonly close: () => Promise<void>;
 }
 
@@ -739,30 +734,77 @@ interface PlaywrightPage {
   readonly evaluate: <A>(source: string) => Promise<A>;
 }
 
-async function maximizeAgentAppBenchmarkWindow(
-  application: Pick<PlaywrightElectronApplication, "evaluate">,
-  page: Pick<PlaywrightPage, "evaluate">,
-): Promise<{ readonly width: number; readonly height: number }> {
-  await application.evaluate(({ BrowserWindow }) => {
-    const windows = BrowserWindow.getAllWindows().filter((window) => !window.isDestroyed());
-    const window = windows.find((candidate) => candidate.isVisible()) ?? windows[0];
-    if (!window) throw new Error("T3 benchmark has no native BrowserWindow to maximize.");
-    window.maximize();
-  });
-  return page.evaluate<{ readonly width: number; readonly height: number }>(`
-    new Promise((resolve) => {
-      let previous = '';
-      let stableFrames = 0;
-      const sample = () => {
-        const current = innerWidth + 'x' + innerHeight;
-        stableFrames = current === previous ? stableFrames + 1 : 0;
-        previous = current;
-        if (stableFrames >= 2) resolve({ width: innerWidth, height: innerHeight });
-        else requestAnimationFrame(sample);
-      };
-      requestAnimationFrame(sample);
-    })
-  `);
+/**
+ * The window is maximized by the persisted desktop settings the materialized
+ * state carries (T3 maximizes on reveal, before first show), so a measured
+ * launch never relayouts from a driver-side maximize. This only proves that
+ * the viewport the measurement ran in is the display's available area.
+ */
+async function assertMaximizedViewport(page: Pick<PlaywrightPage, "evaluate">): Promise<void> {
+  const viewport = await page.evaluate<{
+    readonly width: number;
+    readonly availWidth: number;
+    readonly height: number;
+  }>("({ width: innerWidth, availWidth: screen.availWidth, height: innerHeight })");
+  if (viewport.width !== viewport.availWidth)
+    throw new Error(`T3 window is not maximized: ${JSON.stringify(viewport)}`);
+}
+
+export const T3_MAXIMIZED_DESKTOP_SETTINGS = {
+  mainWindowBounds: { x: 0, y: 0, width: 1200, height: 800 },
+  mainWindowMaximized: true,
+} as const;
+
+/**
+ * Spawns the app exactly as a user launch would, plus a remote-debugging port,
+ * and attaches over CDP. Playwright's Electron launcher instead holds the
+ * app's ready event until its Node inspector attaches, keeps that inspector in
+ * the process family, and adds about forty Chromium switches (PaintHolding
+ * disabled among them) that the compared app never receives.
+ */
+async function launchT3OverCdp(input: {
+  readonly executablePath: string;
+  readonly args: ReadonlyArray<string>;
+  readonly electronProfile: string;
+  readonly env: Record<string, string>;
+}): Promise<PlaywrightElectronApplication> {
+  const child = NodeChildProcess.spawn(
+    input.executablePath,
+    [...input.args, "--remote-debugging-port=0"],
+    { env: input.env, stdio: "ignore" },
+  );
+  const exited = new Promise<never>((_, reject) =>
+    child.once("exit", (code, signal) =>
+      reject(new Error(`T3 exited before CDP attach (code ${code}, signal ${signal}).`)),
+    ),
+  );
+  exited.catch(() => undefined);
+  const portFile = NodePath.join(input.electronProfile, "DevToolsActivePort");
+  const deadline = NodePerfHooks.performance.now() + READINESS_TIMEOUT_MS;
+  let port: number | undefined;
+  while (port === undefined) {
+    const text = await NodeFSP.readFile(portFile, "utf8").catch(() => "");
+    const parsed = Number.parseInt(text.split("\n")[0] ?? "", 10);
+    if (Number.isInteger(parsed) && parsed > 0) port = parsed;
+    else if (child.exitCode !== null || child.signalCode !== null) await exited;
+    else if (NodePerfHooks.performance.now() >= deadline) {
+      child.kill("SIGKILL");
+      throw new Error("T3 never published a DevTools port.");
+    } else await NodeTimersPromises.setTimeout(5);
+  }
+  const browser = await Promise.race([chromium.connectOverCDP(`http://127.0.0.1:${port}`), exited]);
+  const context = browser.contexts()[0];
+  if (!context) throw new Error("T3 exposed no browser context over CDP.");
+  return {
+    process: () => child as unknown as PlaywrightElectronProcess,
+    firstWindow: async () =>
+      (context.pages()[0] ?? (await context.waitForEvent("page"))) as unknown as PlaywrightPage,
+    context: () => context as unknown as PlaywrightBrowserContext,
+    close: async () => {
+      await browser.close().catch(() => undefined);
+      child.kill("SIGTERM");
+    },
+  };
 }
 
 type T3BenchmarkLaunchCommandInput =
@@ -863,6 +905,7 @@ async function readTrustedActivation(page: PlaywrightPage): Promise<number> {
 
 async function waitForComposerUsable(
   page: PlaywrightPage,
+  sessionId: string,
   observationId?: string,
 ): Promise<number> {
   return page.evaluate<number>(`
@@ -872,7 +915,7 @@ async function waitForComposerUsable(
       const frame = (at) => {
         const observation = globalThis.__t3ReadinessObservations?.get(${JSON.stringify(observationId)});
         if (observation?.cancelled) return reject(new Error("T3 composer observation was cancelled."));
-        const composer = document.querySelector('[data-testid="composer-editor"]');
+        const composer = document.querySelector(${JSON.stringify(`[data-chat-owner-thread-key$=${JSON.stringify(`:${sessionId}`)}] [data-testid="composer-editor"]`)});
         const usable = (() => {
           if (!(composer instanceof HTMLElement)) return false;
           const bounds = composer.getBoundingClientRect();
@@ -886,6 +929,22 @@ async function waitForComposerUsable(
       requestAnimationFrame(frame);
     })
   `);
+}
+
+async function revealWorkItem(
+  page: PlaywrightPage,
+  target: ReadinessTarget,
+  timeoutMs = READINESS_TIMEOUT_MS,
+): Promise<void> {
+  const row = page.locator(`[data-thread-item][data-thread-id=${JSON.stringify(target.sessionId)}]`);
+  const deadline = NodePerfHooks.performance.now() + timeoutMs;
+  while ((await row.count()) === 0) {
+    const showMore = page.locator("button").filter({ hasText: /^Show \d+ more$/u, visible: true });
+    if ((await showMore.count()) === 1) await showMore.click();
+    await page.evaluate("new Promise((resolve) => requestAnimationFrame(resolve))");
+    if (NodePerfHooks.performance.now() >= deadline)
+      throw new Error(`T3 never rendered the ${target.logicalSessionId} session row.`);
+  }
 }
 
 export async function ensureWorkItemsRendered(
@@ -1627,7 +1686,7 @@ async function observeSessionReady(
     timeoutMs,
     observationId,
   );
-  const composer = waitForComposerUsable(page, observationId);
+  const composer = waitForComposerUsable(page, target.sessionId, observationId);
   const content = waitForSemanticTimelinePaint(page, target, timeoutMs, observationId);
   const timestamps = await Promise.all([owner, composer, content]);
   return Math.max(...timestamps);
@@ -2445,6 +2504,26 @@ async function seedWorkspacePanelInteractionLoad(
   await waitForPanelContent(page, "diff", fixture, { strictReview: true });
 }
 
+const BENCHMARK_DRIVER_DIRECTORY = "scripts/lib/agent-app-benchmark/";
+
+/**
+ * A driver-only commit on top of the packaged revision leaves the measured
+ * application byte-identical, so it does not need a rebuild. Anything else
+ * changed since the packaged commit, including uncommitted edits outside the
+ * driver, means the bundle no longer matches the source.
+ */
+function changedOnlyBenchmarkDriverBetween(repoRoot: string, packagedCommit: string): boolean {
+  const git = (args: ReadonlyArray<string>) =>
+    NodeChildProcess.execFileSync("git", [...args], { cwd: repoRoot, encoding: "utf8" });
+  try {
+    git(["merge-base", "--is-ancestor", packagedCommit, "HEAD"]);
+  } catch {
+    return false;
+  }
+  const changed = git(["diff", "--name-only", packagedCommit]).split("\n").filter(Boolean);
+  return changed.every((file) => file.startsWith(BENCHMARK_DRIVER_DIRECTORY));
+}
+
 async function gitOutput(repoRoot: string, args: ReadonlyArray<string>): Promise<string> {
   return new Promise((resolve, reject) => {
     NodeChildProcess.execFile(
@@ -2493,7 +2572,7 @@ async function waitForOwnedProcessExit(
 }
 
 export async function closeOwnedApplication(
-  app: Omit<PlaywrightElectronApplication, "evaluate">,
+  app: PlaywrightElectronApplication,
   process: PlaywrightElectronProcess,
   timeouts = {
     closeMs: 5_000,
@@ -2600,6 +2679,7 @@ export function assertPackagedT3PackageRevision(
   packageJson: string,
   sourceCommit: string,
   appAsarPath: string,
+  changedOnlyBenchmarkDriverSince: (packagedCommit: string) => boolean = () => false,
 ): void {
   let parsed: unknown;
   try {
@@ -2613,20 +2693,29 @@ export function assertPackagedT3PackageRevision(
   const packagedCommit = (parsed as { readonly t3codeCommitHash?: unknown }).t3codeCommitHash;
   if (typeof packagedCommit !== "string" || !SOURCE_COMMIT.test(packagedCommit))
     throw new Error(`T3 packaged t3codeCommitHash is invalid in ${appAsarPath}.`);
-  if (packagedCommit !== sourceCommit)
+  if (packagedCommit !== sourceCommit && !changedOnlyBenchmarkDriverSince(packagedCommit))
     throw new Error(
       `T3 packaged revision ${packagedCommit} does not match source HEAD ${sourceCommit} in ${appAsarPath}.`,
     );
 }
 
-export function assertPackagedT3Revision(appAsarPath: string, sourceCommit: string): void {
+export function assertPackagedT3Revision(
+  appAsarPath: string,
+  sourceCommit: string,
+  changedOnlyBenchmarkDriverSince?: (packagedCommit: string) => boolean,
+): void {
   let packageJson: Buffer;
   try {
     packageJson = extractFile(appAsarPath, "package.json");
   } catch (cause) {
     throw new Error(`Unable to inspect T3 packaged metadata in ${appAsarPath}.`, { cause });
   }
-  assertPackagedT3PackageRevision(packageJson.toString("utf8"), sourceCommit, appAsarPath);
+  assertPackagedT3PackageRevision(
+    packageJson.toString("utf8"),
+    sourceCommit,
+    appAsarPath,
+    changedOnlyBenchmarkDriverSince,
+  );
 }
 
 async function sha256FileContents(files: ReadonlyArray<string>): Promise<string> {
@@ -2663,7 +2752,9 @@ async function makeDefaultDependencies(): Promise<T3DriverDependencies> {
           cause,
         });
       }
-      assertPackagedT3Revision(appAsarPath, sourceCommit);
+      assertPackagedT3Revision(appAsarPath, sourceCommit, (packagedCommit) =>
+        changedOnlyBenchmarkDriverBetween(repoRoot, packagedCommit),
+      );
       return sha256FileContents(
         packagedT3BuildDigestFiles(packagedExecutable, NODE_PROCESS.platform),
       );
@@ -2777,35 +2868,35 @@ async function makeDefaultDependencies(): Promise<T3DriverDependencies> {
           ).resolveElectronLaunchCommand,
         });
     const start = NodePerfHooks.performance.now();
-    const app = (await _electron
-      .launch({
-        executablePath: command.executablePath,
-        args: [...command.args],
-        env: t3BenchmarkLaunchEnvironment({
-          baseEnv: Object.fromEntries(
-            Object.entries(NODE_PROCESS.env).filter(
-              (entry): entry is [string, string] => entry[1] !== undefined,
-            ),
+    const app = await launchT3OverCdp({
+      executablePath: command.executablePath,
+      args: command.args,
+      electronProfile,
+      env: t3BenchmarkLaunchEnvironment({
+        baseEnv: Object.fromEntries(
+          Object.entries(NODE_PROCESS.env).filter(
+            (entry): entry is [string, string] => entry[1] !== undefined,
           ),
-          ambientHome,
-          stateHome: attemptHome,
-        }),
-      })
-      .catch(async (error) => {
-        activeAttemptHome = undefined;
-        await NodeFSP.rm(attemptHome, { recursive: true, force: true });
-        throw error;
-      })) as unknown as PlaywrightElectronApplication;
+        ),
+        ambientHome,
+        stateHome: attemptHome,
+      }),
+    }).catch(async (error) => {
+      activeAttemptHome = undefined;
+      await NodeFSP.rm(attemptHome, { recursive: true, force: true });
+      throw error;
+    });
     application = app;
     try {
       const window = await app.firstWindow();
-      await maximizeAgentAppBenchmarkWindow(app, window);
       await window.waitForLoadState("domcontentloaded");
       await waitForSessionList(window);
       await window.bringToFront();
-      await ensureWorkItemsRendered(window, readinessTargets.size);
+      await revealWorkItem(window, target);
       await activateWorkItem(window, target, 6);
       const end = NodePerfHooks.performance.now();
+      await assertMaximizedViewport(window);
+      await ensureWorkItemsRendered(window, readinessTargets.size);
       const electronProcess = app.process();
       if (electronProcess.pid === undefined) throw new Error("T3 Electron root PID is missing.");
       processIdentity = {
@@ -3431,8 +3522,8 @@ async function makeDefaultDependencies(): Promise<T3DriverDependencies> {
         digestSha256: driverDigestSha256,
       },
       scenarios: [
-        "app-start-v1",
-        "session-switch-v1",
+        ...APP_START_SCENARIO_IDS,
+        ...SESSION_SWITCH_SCENARIO_IDS,
         "session-navigation-v1",
         "workspace-panel-v1",
       ],
@@ -3454,6 +3545,11 @@ async function makeDefaultDependencies(): Promise<T3DriverDependencies> {
         recursive: true,
         mode: 0o700,
       });
+      await NodeFSP.writeFile(
+        NodePath.join(p0, "userdata", "desktop-settings.json"),
+        `${JSON.stringify(T3_MAXIMIZED_DESKTOP_SETTINGS)}\n`,
+        { mode: 0o600 },
+      );
       await NodeFSP.mkdir(workspaceRoot, { recursive: true, mode: 0o700 });
       const migrations = (await import(
         NodeURL.pathToFileURL(NodePath.join(repoRoot, "apps/server/src/persistence/Migrations.ts"))
@@ -3556,7 +3652,7 @@ async function makeDefaultDependencies(): Promise<T3DriverDependencies> {
     launch,
     activate: async (target, readinessAttempts = 1) => {
       if (!page) throw new Error("T3 renderer is not running.");
-      return activateWorkItem(page, target, readinessAttempts);
+      return activateWorkItem(page, target, readinessAttempts, "pointerdown");
     },
     executeWorkspacePanelAction,
     executeWorkspacePanelSwitch,
