@@ -3,6 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
+import * as NodeNet from "node:net";
 import * as NodePath from "node:path";
 import * as NodePerfHooks from "node:perf_hooks";
 import * as NodeProcess from "node:process";
@@ -762,15 +763,27 @@ export const T3_MAXIMIZED_DESKTOP_SETTINGS = {
  * the process family, and adds about forty Chromium switches (PaintHolding
  * disabled among them) that the compared app never receives.
  */
+async function availableLoopbackPort(): Promise<number> {
+  const server = NodeNet.createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  if (address === null || typeof address === "string") throw new Error("No loopback port was free.");
+  return address.port;
+}
+
 async function launchT3OverCdp(input: {
   readonly executablePath: string;
   readonly args: ReadonlyArray<string>;
-  readonly electronProfile: string;
   readonly env: Record<string, string>;
 }): Promise<PlaywrightElectronApplication> {
+  const port = await availableLoopbackPort();
   const child = NodeChildProcess.spawn(
     input.executablePath,
-    [...input.args, "--remote-debugging-port=0"],
+    [...input.args, `--remote-debugging-port=${port}`],
     { env: input.env, stdio: "ignore" },
   );
   const exited = new Promise<never>((_, reject) =>
@@ -779,20 +792,17 @@ async function launchT3OverCdp(input: {
     ),
   );
   exited.catch(() => undefined);
-  const portFile = NodePath.join(input.electronProfile, "DevToolsActivePort");
+  const endpoint = `http://127.0.0.1:${port}`;
   const deadline = NodePerfHooks.performance.now() + READINESS_TIMEOUT_MS;
-  let port: number | undefined;
-  while (port === undefined) {
-    const text = await NodeFSP.readFile(portFile, "utf8").catch(() => "");
-    const parsed = Number.parseInt(text.split("\n")[0] ?? "", 10);
-    if (Number.isInteger(parsed) && parsed > 0) port = parsed;
-    else if (child.exitCode !== null || child.signalCode !== null) await exited;
-    else if (NodePerfHooks.performance.now() >= deadline) {
+  while (!(await fetch(`${endpoint}/json/version`).then((response) => response.ok, () => false))) {
+    if (child.exitCode !== null || child.signalCode !== null) await exited;
+    if (NodePerfHooks.performance.now() >= deadline) {
       child.kill("SIGKILL");
-      throw new Error("T3 never published a DevTools port.");
-    } else await NodeTimersPromises.setTimeout(5);
+      throw new Error("T3 never opened its DevTools endpoint.");
+    }
+    await NodeTimersPromises.setTimeout(5);
   }
-  const browser = await Promise.race([chromium.connectOverCDP(`http://127.0.0.1:${port}`), exited]);
+  const browser = await Promise.race([chromium.connectOverCDP(endpoint), exited]);
   const context = browser.contexts()[0];
   if (!context) throw new Error("T3 exposed no browser context over CDP.");
   return {
@@ -2871,7 +2881,6 @@ async function makeDefaultDependencies(): Promise<T3DriverDependencies> {
     const app = await launchT3OverCdp({
       executablePath: command.executablePath,
       args: command.args,
-      electronProfile,
       env: t3BenchmarkLaunchEnvironment({
         baseEnv: Object.fromEntries(
           Object.entries(NODE_PROCESS.env).filter(
@@ -3559,7 +3568,7 @@ async function makeDefaultDependencies(): Promise<T3DriverDependencies> {
       };
       const sqliteClient = (await import(
         NodeURL.pathToFileURL(
-          NodePath.join(repoRoot, "apps/server/src/persistence/NodeSqliteClient.ts"),
+          NodePath.join(repoRoot, "packages/shared/src/nodeSqliteClient.ts"),
         ).href
       )) as { readonly layer: (input: { readonly filename: string }) => never };
       const silentLogger = Logger.layer([Logger.make<unknown, void>(() => undefined)], {
