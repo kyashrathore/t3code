@@ -284,7 +284,6 @@ interface PrepareParams {
   readonly fixtureSeed?: string;
   readonly workspaceFixtureManifest?: WorkspaceFixtureManifest;
   readonly workspaceFixtureDigestSha256?: string;
-  readonly stateCacheDirectory?: string;
 }
 
 interface LaunchParams {
@@ -3559,7 +3558,9 @@ async function makeDefaultDependencies(): Promise<T3DriverDependencies> {
     prepare: async (params) => {
       const runRoot = NodePath.join(NodePath.resolve(params.runDirectory), "driver-state", "t3");
       attemptsRoot = NodePath.join(runRoot, "attempts");
-      const cacheRoot = params.workspaceFixtureManifest ? undefined : params.stateCacheDirectory;
+      const cacheRoot = params.workspaceFixtureManifest
+        ? undefined
+        : NODE_PROCESS.env.AGENT_APP_BENCHMARK_STATE_CACHE;
       const privateRoot = cacheRoot ?? runRoot;
       const p0 = NodePath.join(privateRoot, "P0");
       const p1 = NodePath.join(privateRoot, "P1");
