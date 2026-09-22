@@ -410,7 +410,7 @@ const receipt = {
 
 function makeHarness() {
   const activations: string[] = [];
-  const activationAttempts: number[] = [];
+  const activationTimeouts: Array<number | undefined> = [];
   const launches: Array<{ stateHandle: string; initialSessionId: string }> = [];
   let clock = 10;
   const panelActions: string[] = [];
@@ -485,9 +485,9 @@ function makeHarness() {
         },
       };
     },
-    activate: async (target, readinessAttempts = 1) => {
+    activate: async (target, readinessTimeoutMs) => {
       activations.push(target.logicalSessionId);
-      activationAttempts.push(readinessAttempts);
+      activationTimeouts.push(readinessTimeoutMs);
       const start = clock;
       clock += 2;
       return {
@@ -520,7 +520,7 @@ function makeHarness() {
   return {
     driver,
     activations,
-    activationAttempts,
+    activationTimeouts,
     launches,
     panelActions,
     panelActionLoads,
@@ -662,8 +662,8 @@ it("enforces cold and warm session-switch preparation around one measured activa
   assert.equal(warm.durationMs, 2);
 });
 
-it("retries the real control activation after the progressive resource workload", async () => {
-  const { driver, activations, activationAttempts } = makeHarness();
+it("bounds the control return after the progressive resource workload by the shared ceiling", async () => {
+  const { driver, activations, activationTimeouts } = makeHarness();
   await prepare(driver);
   await driver.launch({
     scenarioId: "session-switch-v1",
@@ -680,7 +680,7 @@ it("retries the real control activation after the progressive resource workload"
     },
   });
   assert.equal(activations.at(-1), "control");
-  assert.equal(activationAttempts.at(-1), 6);
+  assert.equal(activationTimeouts.at(-1), 10_000);
 });
 
 it("measures app start from the exact requested sealed state", async () => {

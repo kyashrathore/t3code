@@ -3,6 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
+import * as NodeHttp from "node:http";
 import * as NodeNet from "node:net";
 import * as NodePath from "node:path";
 import * as NodePerfHooks from "node:perf_hooks";
@@ -237,7 +238,7 @@ interface T3DriverDependencies {
   readonly launch: (stateHandle: string, initialSessionId: string) => Promise<ActiveLaunch>;
   readonly activate: (
     target: ReadinessTarget,
-    readinessAttempts?: number,
+    readinessTimeoutMs?: number,
   ) => Promise<MonotonicClock>;
   readonly executeWorkspacePanelAction: (
     benchmarkCase: WorkspacePanelCase | WorkspacePanelV2Case,
@@ -283,6 +284,7 @@ interface PrepareParams {
   readonly fixtureSeed?: string;
   readonly workspaceFixtureManifest?: WorkspaceFixtureManifest;
   readonly workspaceFixtureDigestSha256?: string;
+  readonly stateCacheDirectory?: string;
 }
 
 interface LaunchParams {
@@ -456,7 +458,7 @@ export function createT3PublicDriver(dependencies: T3DriverDependencies): T3Publ
       }
       const clock = await dependencies.activate(
         destination,
-        benchmarkCase.workload === "resource-control" ? 6 : 1,
+        benchmarkCase.workload === "resource-control" ? RESOURCE_CONTROL_READINESS_TIMEOUT_MS : undefined,
       );
       return execution(benchmarkCase.caseId, clock, readinessReceipt(clock.end));
     },
@@ -500,6 +502,13 @@ const WORKSPACE_PANEL_V2_ACTIONS = new Set<WorkspacePanelV2Action>([
   "expand-all",
   "collapse-all",
 ]);
+
+/**
+ * The resource workload's return to control is a validity check, not a scored
+ * latency; the compared driver uses the same ceiling so a return that never
+ * becomes ready costs both runs the same bounded wait.
+ */
+const RESOURCE_CONTROL_READINESS_TIMEOUT_MS = 10_000;
 
 const APP_START_SCENARIO_IDS: ReadonlyArray<string> = ["app-start-v1", "app-start-fast-v1"];
 const SESSION_SWITCH_SCENARIO_IDS: ReadonlyArray<string> = [
@@ -763,6 +772,16 @@ export const T3_MAXIMIZED_DESKTOP_SETTINGS = {
  * the process family, and adds about forty Chromium switches (PaintHolding
  * disabled among them) that the compared app never receives.
  */
+function devToolsEndpointAnswers(url: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const request = NodeHttp.get(url, (response) => {
+      response.resume();
+      resolve(response.statusCode === 200);
+    });
+    request.on("error", () => resolve(false));
+  });
+}
+
 async function availableLoopbackPort(): Promise<number> {
   const server = NodeNet.createServer();
   await new Promise<void>((resolve, reject) => {
@@ -794,7 +813,7 @@ async function launchT3OverCdp(input: {
   exited.catch(() => undefined);
   const endpoint = `http://127.0.0.1:${port}`;
   const deadline = NodePerfHooks.performance.now() + READINESS_TIMEOUT_MS;
-  while (!(await fetch(`${endpoint}/json/version`).then((response) => response.ok, () => false))) {
+  while (!(await devToolsEndpointAnswers(`${endpoint}/json/version`))) {
     if (child.exitCode !== null || child.signalCode !== null) await exited;
     if (NodePerfHooks.performance.now() >= deadline) {
       child.kill("SIGKILL");
@@ -1080,6 +1099,7 @@ async function activateWorkItem(
   target: ReadinessTarget,
   launchReadinessAttempts = 1,
   trustedInputEvent: "click" | "pointerdown" = "click",
+  readinessTimeoutMs = READINESS_TIMEOUT_MS,
 ): Promise<MonotonicClock> {
   const matches = page
     .locator(
@@ -1098,9 +1118,7 @@ async function activateWorkItem(
           observeSessionReady(
             page,
             target,
-            launchReadinessAttempts === 1
-              ? READINESS_TIMEOUT_MS
-              : READINESS_TIMEOUT_MS / launchReadinessAttempts,
+            readinessTimeoutMs / launchReadinessAttempts,
             observationId,
           ),
         async () => {
@@ -2790,6 +2808,7 @@ async function makeDefaultDependencies(): Promise<T3DriverDependencies> {
   let activeAttemptHome: string | undefined;
   let preserveActiveAttempt = false;
   let attemptSequence = 0;
+  let attemptsRoot: string | undefined;
 
   const shutdown = async () => {
     const app = application;
@@ -2823,11 +2842,8 @@ async function makeDefaultDependencies(): Promise<T3DriverDependencies> {
     if (application) throw new Error("T3 application is already running.");
     const target = readinessTargets.get(initialSessionId);
     if (!target) throw new Error(`T3 has no readiness target for ${initialSessionId}.`);
-    const attemptHome = NodePath.join(
-      NodePath.dirname(stateHandle),
-      "attempts",
-      String(attemptSequence++),
-    );
+    if (!attemptsRoot) throw new Error("T3 launch requires preparation.");
+    const attemptHome = NodePath.join(attemptsRoot, String(attemptSequence++));
     await NodeFSP.mkdir(NodePath.dirname(attemptHome), {
       recursive: true,
       mode: 0o700,
@@ -3541,13 +3557,20 @@ async function makeDefaultDependencies(): Promise<T3DriverDependencies> {
       guiFramework: "electron",
     },
     prepare: async (params) => {
-      const privateRoot = NodePath.join(
-        NodePath.resolve(params.runDirectory),
-        "driver-state",
-        "t3",
-      );
+      const runRoot = NodePath.join(NodePath.resolve(params.runDirectory), "driver-state", "t3");
+      attemptsRoot = NodePath.join(runRoot, "attempts");
+      const cacheRoot = params.workspaceFixtureManifest ? undefined : params.stateCacheDirectory;
+      const privateRoot = cacheRoot ?? runRoot;
       const p0 = NodePath.join(privateRoot, "P0");
       const p1 = NodePath.join(privateRoot, "P1");
+      const cached = cacheRoot
+        ? await readT3PreparedCache(cacheRoot, params.corpusDigestSha256)
+        : undefined;
+      if (cached) {
+        readinessTargets = cached.readinessTargets;
+        workspaceFixture = undefined;
+        return { materialization: cached, stateHandles: { P0: p0, P1: p1 } };
+      }
       const workspaceRoot = t3BenchmarkWorkspaceRoot(p0);
       const dbPath = NodePath.join(p0, "userdata", "state.sqlite");
       await NodeFSP.mkdir(NodePath.dirname(dbPath), {
@@ -3643,7 +3666,7 @@ async function makeDefaultDependencies(): Promise<T3DriverDependencies> {
       const warmupShutdown = await shutdown();
       if (warmupShutdown.survivors.length > 0)
         throw new Error("T3 P1 initialization left a surviving process.");
-      const initializedAttempt = NodePath.join(privateRoot, "attempts", "0");
+      const initializedAttempt = NodePath.join(attemptsRoot, "0");
       await NodeFSP.rm(p1, { recursive: true, force: true });
       await NodeFSP.rename(initializedAttempt, p1);
       const initializedAttemptFixtureSeal = workspaceFixtureSeals.get(initializedAttempt);
@@ -3656,18 +3679,55 @@ async function makeDefaultDependencies(): Promise<T3DriverDependencies> {
           : {}),
       });
       if (warmedFixtureSeal) workspaceFixtureSeals.set(p1, warmedFixtureSeal);
+      if (cacheRoot) await writeT3PreparedCache(cacheRoot, materialization);
       return { materialization, stateHandles: { P0: p0, P1: p1 } };
     },
     launch,
-    activate: async (target, readinessAttempts = 1) => {
+    activate: async (target, readinessTimeoutMs = READINESS_TIMEOUT_MS) => {
       if (!page) throw new Error("T3 renderer is not running.");
-      return activateWorkItem(page, target, readinessAttempts, "pointerdown");
+      return activateWorkItem(page, target, 1, "pointerdown", readinessTimeoutMs);
     },
     executeWorkspacePanelAction,
     executeWorkspacePanelSwitch,
     executeSessionNavigation,
     shutdown,
   };
+}
+
+const T3_PREPARED_CACHE_FILE = "prepared.json";
+
+/**
+ * Written only after P1 seeding succeeded, so its presence means both state
+ * handles beside it are complete. Launches copy the handles, which keeps P0
+ * never-launched for every scenario that reuses it.
+ */
+async function writeT3PreparedCache(
+  cacheRoot: string,
+  materialization: T3PublicMaterializationResult,
+): Promise<void> {
+  await NodeFSP.writeFile(
+    NodePath.join(cacheRoot, T3_PREPARED_CACHE_FILE),
+    JSON.stringify({ ...materialization, readinessTargets: [...materialization.readinessTargets] }),
+    { mode: 0o600 },
+  );
+}
+
+async function readT3PreparedCache(
+  cacheRoot: string,
+  corpusDigestSha256: string,
+): Promise<T3PublicMaterializationResult | undefined> {
+  const text = await NodeFSP.readFile(NodePath.join(cacheRoot, T3_PREPARED_CACHE_FILE), "utf8").catch(
+    () => undefined,
+  );
+  if (text === undefined) return undefined;
+  const record = JSON.parse(text) as Omit<T3PublicMaterializationResult, "readinessTargets"> & {
+    readonly readinessTargets: ReadonlyArray<
+      [string, T3PublicMaterializationResult["readinessTargets"] extends ReadonlyMap<string, infer V> ? V : never]
+    >;
+  };
+  if (record.corpusDigestSha256 !== corpusDigestSha256 || !Array.isArray(record.readinessTargets))
+    throw new Error("T3 prepared-state cache belongs to a different corpus.");
+  return { ...record, readinessTargets: new Map(record.readinessTargets) };
 }
 
 function asPrepareParams(params: unknown): PrepareParams {
